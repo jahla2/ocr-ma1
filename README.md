@@ -81,7 +81,7 @@ Some OCR/table packages may install the CPU ONNX Runtime build. Replace it with 
 
 ```powershell
 pip uninstall -y onnxruntime
-pip install --upgrade onnxruntime-gpu
+pip install --upgrade "onnxruntime-gpu[cuda,cudnn]"
 ```
 
 Create your local configuration:
