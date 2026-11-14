@@ -27,9 +27,16 @@ def _line_center(line: OCRLine) -> tuple[float, float]:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def _labeled_amount(lines: list[OCRLine], labels: tuple[str, ...]) -> float | None:
+def _labeled_amount(
+    lines: list[OCRLine],
+    labels: tuple[str, ...],
+    *,
+    exclude: tuple[str, ...] = (),
+) -> float | None:
     for label_line in lines:
         lowered = label_line.text.lower()
+        if any(blocked in lowered for blocked in exclude):
+            continue
         if not any(label in lowered for label in labels):
             continue
 
@@ -66,7 +73,6 @@ def _table_last_column_sum(tables: list[TableResult]) -> float | None:
             amount = _money(row[-1])
             if amount is None:
                 continue
-            # Skip obvious total/header rows; validation compares line-item sum.
             joined = " ".join(row).lower()
             if any(word in joined for word in ("total", "subtotal", "gst", "tax", "vat")):
                 continue
@@ -81,19 +87,30 @@ def validate_page(lines: list[OCRLine], tables: list[TableResult], settings: Set
     confidences = [line.confidence for line in lines]
     avg_conf = mean(confidences) if confidences else 0.0
     hard_low = [line for line in lines if line.confidence < settings.ocr_hard_fail_score]
+    hard_low_numeric = [line for line in hard_low if re.search(r"\d", line.text)]
 
     checks["ocr_present"] = bool(lines)
     checks["mean_ocr_confidence"] = avg_conf >= 0.98
-    checks["hard_low_confidence_ratio"] = (len(hard_low) / max(len(lines), 1)) <= 0.02
+    checks["critical_numeric_confidence"] = not hard_low_numeric
+    checks["hard_low_confidence_ratio"] = (len(hard_low) / max(len(lines), 1)) <= 0.05
 
-    if hard_low:
-        warnings.append(f"{len(hard_low)} OCR line(s) remain below {settings.ocr_hard_fail_score:.2f} confidence.")
+    if hard_low_numeric:
+        warnings.append(
+            f"{len(hard_low_numeric)} numeric OCR line(s) remain below "
+            f"{settings.ocr_hard_fail_score:.2f} confidence."
+        )
+    elif len(hard_low) / max(len(lines), 1) > 0.05:
+        warnings.append("Too much low-confidence text remains on the page.")
 
     subtotal = _labeled_amount(
         lines,
         ("total exclusive", "subtotal", "sub total", "total excl", "net total"),
     )
-    tax = _labeled_amount(lines, ("gst$", "gst ", "tax", "vat"))
+    tax = _labeled_amount(
+        lines,
+        ("gst$", "gst ", "tax", "vat"),
+        exclude=("total", "incl", "grand"),
+    )
     total = _labeled_amount(
         lines,
         ("total incl", "grand total", "amount due", "total due", "invoice total"),
@@ -117,10 +134,6 @@ def validate_page(lines: list[OCRLine], tables: list[TableResult], settings: Set
     if tables:
         checks["table_structure_present"] = any(bool(table.rows) for table in tables)
 
-    if not checks:
-        score = 0.0
-    else:
-        score = 100.0 * sum(1 for ok in checks.values() if ok) / len(checks)
-
+    score = 0.0 if not checks else 100.0 * sum(1 for ok in checks.values() if ok) / len(checks)
     status = "accept" if score >= 98.0 and not warnings else "review"
     return ValidationResult(score=round(score, 2), status=status, warnings=warnings, checks=checks)
