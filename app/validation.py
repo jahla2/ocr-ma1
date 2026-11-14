@@ -84,13 +84,17 @@ def validate_page(lines: list[OCRLine], tables: list[TableResult], settings: Set
     warnings: list[str] = []
     checks: dict[str, bool] = {}
 
-    confidences = [line.confidence for line in lines]
-    avg_conf = mean(confidences) if confidences else 0.0
     hard_low = [line for line in lines if line.confidence < settings.ocr_hard_fail_score]
     hard_low_numeric = [line for line in hard_low if re.search(r"\d", line.text)]
+    trusted_confidences = [
+        line.confidence
+        for line in lines
+        if line.confidence >= settings.ocr_hard_fail_score
+    ]
+    avg_trusted_conf = mean(trusted_confidences) if trusted_confidences else 0.0
 
     checks["ocr_present"] = bool(lines)
-    checks["mean_ocr_confidence"] = avg_conf >= 0.98
+    checks["mean_ocr_confidence"] = avg_trusted_conf >= 0.98
     checks["critical_numeric_confidence"] = not hard_low_numeric
     checks["hard_low_confidence_ratio"] = (len(hard_low) / max(len(lines), 1)) <= 0.05
 
@@ -108,7 +112,7 @@ def validate_page(lines: list[OCRLine], tables: list[TableResult], settings: Set
     )
     tax = _labeled_amount(
         lines,
-        ("gst$", "gst ", "tax", "vat"),
+        ("gst", "tax", "vat"),
         exclude=("total", "incl", "grand"),
     )
     total = _labeled_amount(
