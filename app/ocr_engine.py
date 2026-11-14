@@ -6,10 +6,17 @@ from typing import Iterable
 
 import cv2
 import numpy as np
-from rapidocr import RapidOCR
+from rapidocr import EngineType, ModelType, OCRVersion, RapidOCR
 
 from app.config import Settings
 from app.models import OCRLine
+
+
+_MODEL_TYPES = {
+    "tiny": ModelType.TINY,
+    "small": ModelType.SMALL,
+    "medium": ModelType.MEDIUM,
+}
 
 
 class OCREngine:
@@ -37,13 +44,13 @@ class OCREngine:
         use_cuda = self.settings.ocr_device == "cuda"
         return RapidOCR(
             params={
-                "Det.engine_type": "onnxruntime",
-                "Rec.engine_type": "onnxruntime",
-                "Cls.engine_type": "onnxruntime",
-                "Det.model_type": det_model,
-                "Rec.model_type": rec_model,
-                "Det.ocr_version": "PP-OCRv6",
-                "Rec.ocr_version": "PP-OCRv6",
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+                "Cls.engine_type": EngineType.ONNXRUNTIME,
+                "Det.model_type": _MODEL_TYPES[det_model],
+                "Rec.model_type": _MODEL_TYPES[rec_model],
+                "Det.ocr_version": OCRVersion.PPOCRV6,
+                "Rec.ocr_version": OCRVersion.PPOCRV6,
                 "Det.limit_side_len": limit_side_len,
                 "Global.text_score": self.settings.ocr_text_score,
                 "Global.return_word_box": True,
