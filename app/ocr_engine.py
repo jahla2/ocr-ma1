@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import re
+import threading
+from typing import Iterable
+
+import cv2
+import numpy as np
+from rapidocr import EngineType, ModelType, OCRVersion, RapidOCR
+
+from app.config import Settings
+from app.models import OCRLine
+
+
+_MODEL_TYPES = {
+    "tiny": ModelType.TINY,
+    "small": ModelType.SMALL,
+    "medium": ModelType.MEDIUM,
+}
+
+
+def _preload_onnx_gpu_runtime() -> None:
+    """Preload CUDA/cuDNN DLLs installed in the active Python environment.
+
+    ONNX Runtime >= 1.21 exposes preload_dlls(). Using directory="" tells it to
+    search NVIDIA packages installed under site-packages. This avoids requiring
+    users to manually copy cuDNN DLLs into system PATH.
+    """
+    import onnxruntime as ort
+
+    if hasattr(ort, "preload_dlls"):
+        ort.preload_dlls(directory="")
+
+
+class OCREngine:
+    """Long-lived RapidOCR engines.
+
+    Primary path:
+      PP-OCRv6 small detector + configurable recognizer (medium by default).
+
+    Retry path:
+      PP-OCRv6 medium detector + medium recognizer with a larger input side.
+      It is created lazily and only used for uncertain crops.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+        if settings.ocr_device == "cuda":
+            _preload_onnx_gpu_runtime()
+
+        self._primary = self._build_engine(
+            det_model=settings.ocr_det_model,
+            rec_model=settings.ocr_rec_model,
+            limit_side_len=settings.ocr_limit_side_len,
+        )
+        self._retry: RapidOCR | None = None
+        self._lock = threading.Lock()
+
+    def _build_engine(self, det_model: str, rec_model: str, limit_side_len: int) -> RapidOCR:
+        use_cuda = self.settings.ocr_device == "cuda"
+        return RapidOCR(
+            params={
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+                "Cls.engine_type": EngineType.ONNXRUNTIME,
+                "Det.model_type": _MODEL_TYPES[det_model],
+                "Rec.model_type": _MODEL_TYPES[rec_model],
+                "Det.ocr_version": OCRVersion.PPOCRV6,
+                "Rec.ocr_version": OCRVersion.PPOCRV6,
+                "Det.limit_side_len": limit_side_len,
+                "Global.text_score": self.settings.ocr_text_score,
+                "Global.return_word_box": True,
+                "EngineConfig.onnxruntime.use_cuda": use_cuda,
+                "EngineConfig.onnxruntime.cuda_ep_cfg.device_id": 0,
+            }
+        )
+
+    def _get_retry_engine(self) -> RapidOCR:
+        if self._retry is None:
+            with self._lock:
+                if self._retry is None:
+                    self._retry = self._build_engine(
+                        det_model="medium",
+                        rec_model="medium",
+                        limit_side_len=max(self.settings.ocr_limit_side_len, 1280),
+                    )
+        return self._retry
+
+    @staticmethod
+    def _to_lines(result) -> list[OCRLine]:
+        if result is None or result.boxes is None:
+            return []
+        boxes = result.boxes.tolist() if hasattr(result.boxes, "tolist") else result.boxes
+        txts = list(result.txts or [])
+        scores = list(result.scores or [])
+        return [
+            OCRLine(text=str(text), confidence=float(score), box=[[float(x), float(y)] for x, y in box])
+            for box, text, score in zip(boxes, txts, scores)
+        ]
+
+    def run(self, image: np.ndarray) -> tuple[list[OCRLine], float, object]:
+        result = self._primary(image, return_word_box=True)
+        return self._to_lines(result), float(result.elapse or 0.0), result
+
+    def retry_crop(self, crop: np.ndarray) -> list[OCRLine]:
+        if crop.size == 0:
+            return []
+
+        h, w = crop.shape[:2]
+        if min(h, w) < 900:
+            crop = cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+
+        result = self._get_retry_engine()(crop, return_word_box=True)
+        return self._to_lines(result)
+
+    @staticmethod
+    def crop_for_line(image: np.ndarray, line: OCRLine, padding: int = 12) -> np.ndarray:
+        pts = np.asarray(line.box, dtype=np.float32)
+        x1 = max(int(np.floor(pts[:, 0].min())) - padding, 0)
+        y1 = max(int(np.floor(pts[:, 1].min())) - padding, 0)
+        x2 = min(int(np.ceil(pts[:, 0].max())) + padding, image.shape[1])
+        y2 = min(int(np.ceil(pts[:, 1].max())) + padding, image.shape[0])
+        return image[y1:y2, x1:x2]
+
+    def _should_retry(self, line: OCRLine) -> bool:
+        if line.confidence < self.settings.ocr_hard_fail_score:
+            return True
+        contains_digit = bool(re.search(r"\d", line.text))
+        return contains_digit and line.confidence < self.settings.ocr_retry_score
+
+    def improve_uncertain_lines(self, image: np.ndarray, lines: Iterable[OCRLine]) -> list[OCRLine]:
+        if not self.settings.enable_targeted_retry:
+            return list(lines)
+
+        improved: list[OCRLine] = []
+        for line in lines:
+            if not self._should_retry(line):
+                improved.append(line)
+                continue
+
+            crop = self.crop_for_line(image, line)
+            candidates = self.retry_crop(crop)
+            if not candidates:
+                improved.append(line)
+                continue
+
+            best = max(candidates, key=lambda item: item.confidence)
+            if best.confidence <= line.confidence:
+                improved.append(line)
+                continue
+
+            improved.append(OCRLine(text=best.text, confidence=best.confidence, box=line.box))
+
+        return improved
