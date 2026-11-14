@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 from typing import Iterable
 
@@ -91,13 +92,21 @@ class OCREngine:
         return self._to_lines(result)
 
     @staticmethod
-    def crop_for_line(image: np.ndarray, line: OCRLine, padding: int = 12) -> tuple[np.ndarray, tuple[int, int]]:
+    def crop_for_line(image: np.ndarray, line: OCRLine, padding: int = 12) -> np.ndarray:
         pts = np.asarray(line.box, dtype=np.float32)
         x1 = max(int(np.floor(pts[:, 0].min())) - padding, 0)
         y1 = max(int(np.floor(pts[:, 1].min())) - padding, 0)
         x2 = min(int(np.ceil(pts[:, 0].max())) + padding, image.shape[1])
         y2 = min(int(np.ceil(pts[:, 1].max())) + padding, image.shape[0])
-        return image[y1:y2, x1:x2], (x1, y1)
+        return image[y1:y2, x1:x2]
+
+    def _should_retry(self, line: OCRLine) -> bool:
+        # Retry anything clearly unreliable, plus uncertain numeric text because
+        # digits, dates, invoice IDs, quantities and money are high-value fields.
+        if line.confidence < self.settings.ocr_hard_fail_score:
+            return True
+        contains_digit = bool(re.search(r"\d", line.text))
+        return contains_digit and line.confidence < self.settings.ocr_retry_score
 
     def improve_uncertain_lines(self, image: np.ndarray, lines: Iterable[OCRLine]) -> list[OCRLine]:
         if not self.settings.enable_targeted_retry:
@@ -105,11 +114,11 @@ class OCREngine:
 
         improved: list[OCRLine] = []
         for line in lines:
-            if line.confidence >= self.settings.ocr_retry_score:
+            if not self._should_retry(line):
                 improved.append(line)
                 continue
 
-            crop, (x0, y0) = self.crop_for_line(image, line)
+            crop = self.crop_for_line(image, line)
             candidates = self.retry_crop(crop)
             if not candidates:
                 improved.append(line)
@@ -120,7 +129,7 @@ class OCREngine:
                 improved.append(line)
                 continue
 
-            # Keep the original page-level geometry; retry is for text recognition quality.
+            # Keep original page-level geometry. The retry changes recognition only.
             improved.append(OCRLine(text=best.text, confidence=best.confidence, box=line.box))
 
         return improved
