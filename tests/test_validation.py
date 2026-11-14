@@ -21,8 +21,12 @@ def test_financial_validation_accepts_consistent_invoice():
         line("5.63", 300, 120),
         line("Total Incl. GST$", 10, 140),
         line("43.20", 300, 140),
-        line("tiny legal footer", 10, 200, confidence=0.70),
     ]
+    # Typical invoices contain many clean lines; one bad tiny footer line should
+    # not fail the page when critical numeric data and arithmetic are correct.
+    lines.extend(line(f"clean text {i}", 10, 220 + i * 15) for i in range(20))
+    lines.append(line("tiny legal footer", 10, 600, confidence=0.70))
+
     table = TableResult(
         bbox=[0, 20, 400, 90],
         html="<table></table>",
