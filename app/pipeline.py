@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import cv2
-import fitz
+import pymupdf
 import numpy as np
 
 from app.config import Settings
@@ -26,9 +26,9 @@ class DocumentPipeline:
         self.ocr.run(blank)
 
     def _render_pdf(self, data: bytes):
-        document = fitz.open(stream=data, filetype="pdf")
+        document = pymupdf.open(stream=data, filetype="pdf")
         scale = self.settings.pdf_dpi / 72.0
-        matrix = fitz.Matrix(scale, scale)
+        matrix = pymupdf.Matrix(scale, scale)
         try:
             for index, page in enumerate(document):
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
