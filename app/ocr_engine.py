@@ -19,6 +19,19 @@ _MODEL_TYPES = {
 }
 
 
+def _preload_onnx_gpu_runtime() -> None:
+    """Preload CUDA/cuDNN DLLs installed in the active Python environment.
+
+    ONNX Runtime >= 1.21 exposes preload_dlls(). Using directory="" tells it to
+    search NVIDIA packages installed under site-packages. This avoids requiring
+    users to manually copy cuDNN DLLs into system PATH.
+    """
+    import onnxruntime as ort
+
+    if hasattr(ort, "preload_dlls"):
+        ort.preload_dlls(directory="")
+
+
 class OCREngine:
     """Long-lived RapidOCR engines.
 
@@ -32,6 +45,10 @@ class OCREngine:
 
     def __init__(self, settings: Settings):
         self.settings = settings
+
+        if settings.ocr_device == "cuda":
+            _preload_onnx_gpu_runtime()
+
         self._primary = self._build_engine(
             det_model=settings.ocr_det_model,
             rec_model=settings.ocr_rec_model,
@@ -90,7 +107,6 @@ class OCREngine:
         if crop.size == 0:
             return []
 
-        # Upscale only uncertain regions; this preserves normal-path speed.
         h, w = crop.shape[:2]
         if min(h, w) < 900:
             crop = cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
@@ -108,8 +124,6 @@ class OCREngine:
         return image[y1:y2, x1:x2]
 
     def _should_retry(self, line: OCRLine) -> bool:
-        # Retry anything clearly unreliable, plus uncertain numeric text because
-        # digits, dates, invoice IDs, quantities and money are high-value fields.
         if line.confidence < self.settings.ocr_hard_fail_score:
             return True
         contains_digit = bool(re.search(r"\d", line.text))
@@ -136,7 +150,6 @@ class OCREngine:
                 improved.append(line)
                 continue
 
-            # Keep original page-level geometry. The retry changes recognition only.
             improved.append(OCRLine(text=best.text, confidence=best.confidence, box=line.box))
 
         return improved
