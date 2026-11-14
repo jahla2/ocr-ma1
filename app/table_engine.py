@@ -32,7 +32,7 @@ class TableExtractor:
                 model_type=model_type,
                 engine_cfg={
                     "use_cuda": use_cuda,
-                    "cuda_ep_cfg.gpu_id": 0,
+                    "cuda_ep_cfg.device_id": 0,
                 },
             )
         )
@@ -175,8 +175,6 @@ class TableExtractor:
             except Exception:
                 regions = []
 
-        # Safe fallback: run structure recognition on the page only when OCR
-        # geometry/text strongly suggests a table is present.
         if not regions:
             regions = [(0, 0, image.shape[1], image.shape[0])]
 
