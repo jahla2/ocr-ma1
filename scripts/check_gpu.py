@@ -4,17 +4,28 @@ import onnxruntime as ort
 
 
 def main() -> None:
+    print(f"ONNX Runtime version: {ort.__version__}")
+
+    if hasattr(ort, "preload_dlls"):
+        print("\nPreloading CUDA/cuDNN DLLs from Python site-packages...")
+        ort.preload_dlls(directory="")
+
     providers = ort.get_available_providers()
-    print("ONNX Runtime providers:")
+    print("\nONNX Runtime providers:")
     for provider in providers:
         print(f" - {provider}")
 
+    if hasattr(ort, "print_debug_info"):
+        print("\nRuntime DLL diagnostics:")
+        ort.print_debug_info()
+
     if "CUDAExecutionProvider" in providers:
-        print("\nCUDAExecutionProvider is available: GPU mode is ready.")
+        print("\nCUDAExecutionProvider is available.")
+        print("If cudnn64_9.dll is shown as loaded above, GPU inference is ready.")
     else:
         print(
             "\nCUDAExecutionProvider is NOT available. "
-            "Install onnxruntime-gpu and verify your NVIDIA/CUDA runtime."
+            "Install the GPU extra and verify your NVIDIA driver."
         )
 
 
