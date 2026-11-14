@@ -131,15 +131,7 @@ Health check:
 curl.exe http://127.0.0.1:8000/health
 ```
 
-Extract a PDF:
-
-```powershell
-curl.exe -X POST ^
-  -F "file=@C:\path\to\INV-MICO (2).pdf" ^
-  http://127.0.0.1:8000/extract
-```
-
-PowerShell-native version:
+Extract a PDF from PowerShell:
 
 ```powershell
 $file = "C:\path\to\INV-MICO (2).pdf"
